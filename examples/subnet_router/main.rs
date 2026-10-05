@@ -114,6 +114,7 @@ fn icmp_echo_reply(packet: &mut [u8], addr: Ipv4Addr) -> bool {
     };
     let ihl = usize::from(first & 0x0f) * 4;
     if first >> 4 != 4
+        || ihl < 20
         || packet.len() < ihl + 8
         || packet[9] != 1 // ICMP
         || packet[16..20] != addr.octets()

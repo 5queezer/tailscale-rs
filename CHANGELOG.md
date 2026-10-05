@@ -6,8 +6,8 @@ Record breaking or significant changes here. All dates are UTC.
 
 Put changes for the upcoming release here!
 
-- Added (Rust API, ts_control, ts_runtime): subnet router support. `Config::advertise_routes` is reported to control
-  in `HostInfo.RoutableIPs`, and inbound traffic for approved advertised routes is delivered as raw IP packets via
+- Added (Rust API, ts_control, ts_runtime): subnet router support. `Config::advertise_routes` sets the routes
+  reported to control in `HostInfo.RoutableIPs`, and inbound traffic for approved advertised routes is delivered as raw IP packets via
   `Device::take_subnet_router` instead of the userspace netstack. See the new `subnet_router` example.
 - Changed (ts_dataplane): packets for an overlay transport whose receiver has been dropped are now logged and dropped
   instead of panicking.
