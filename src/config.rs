@@ -41,6 +41,14 @@ pub struct Config {
     ///
     /// [KB article on ephemeral nodes]: https://tailscale.com/docs/features/ephemeral-nodes
     pub ephemeral: bool,
+
+    /// Subnet routes this node advertises to the tailnet, making it a subnet router.
+    ///
+    /// Routes must be approved in the admin console (or by an auto-approver) before peers send
+    /// traffic for them. Traffic for approved routes is delivered as raw IP packets via
+    /// [`Device::take_subnet_router`](crate::Device::take_subnet_router); it's up to the caller to
+    /// forward it. Until the handle is taken, that traffic is queued without bound.
+    pub advertise_routes: Vec<ipnet::IpNet>,
 }
 
 impl Config {
@@ -118,6 +126,7 @@ impl From<&Config> for ts_control::Config {
             server_url: value.control_server_url.clone(),
             tags: value.requested_tags.clone(),
             ephemeral: value.ephemeral,
+            advertise_routes: value.advertise_routes.clone(),
         }
     }
 }
@@ -131,6 +140,7 @@ impl Default for Config {
             requested_hostname: None,
             requested_tags: vec![],
             ephemeral: false,
+            advertise_routes: vec![],
         }
     }
 }

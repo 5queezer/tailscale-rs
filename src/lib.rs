@@ -122,6 +122,7 @@
 //! [`axum` HTTP server]: https://docs.rs/axum/latest/axum/
 
 use std::{
+    collections::VecDeque,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     time::Duration,
 };
@@ -319,6 +320,23 @@ impl Device {
             .map_err(Into::into)
     }
 
+    /// Take the raw-packet handle for this device's advertised subnet routes.
+    ///
+    /// Returns `None` if [`Config::advertise_routes`] is empty, or if the handle has already been
+    /// taken.
+    pub async fn take_subnet_router(&self) -> Result<Option<SubnetRouter>, Error> {
+        let transport = self
+            .runtime
+            .ask(ts_runtime::TakePacketTransport)
+            .await
+            .map_err(ts_runtime::Error::from)?;
+
+        Ok(transport.map(|inner| SubnetRouter {
+            inner,
+            pending: VecDeque::new(),
+        }))
+    }
+
     /// Attempt to gracefully shut down this device's runtime.
     ///
     /// Reports whether the device was fully shut down before the timeout. It is still shut
@@ -348,6 +366,51 @@ impl Device {
 
                 true
             }
+        }
+    }
+}
+
+/// Raw IPv4/IPv6 packet access for routing advertised subnets.
+///
+/// Obtained from [`Device::take_subnet_router`]. Packets received from tailnet peers whose
+/// destination falls in one of [`Config::advertise_routes`] are delivered by
+/// [`recv`](SubnetRouter::recv) instead of to the userspace netstack. Packets passed to
+/// [`send`](SubnetRouter::send) are routed to tailnet peers exactly like netstack traffic.
+///
+/// Inbound packets are queued without bound until received, so keep calling `recv` while the
+/// device is running.
+pub struct SubnetRouter {
+    inner: ts_runtime::PacketTransport,
+    pending: VecDeque<Vec<u8>>,
+}
+
+impl SubnetRouter {
+    /// Send an IP packet to the tailnet.
+    ///
+    /// Packets without a route to a tailnet peer are dropped.
+    pub async fn send(&self, packet: &[u8]) -> Result<(), Error> {
+        self.inner
+            .up
+            .send((self.inner.id, vec![packet.into()]))
+            .map_err(|_| Error::Internal(InternalErrorKind::InternalChannelClosed))
+    }
+
+    /// Receive the next IP packet from the tailnet addressed to an advertised route.
+    ///
+    /// This method is cancel-safe.
+    pub async fn recv(&mut self) -> Result<Vec<u8>, Error> {
+        loop {
+            if let Some(packet) = self.pending.pop_front() {
+                return Ok(packet);
+            }
+
+            let packets = self
+                .inner
+                .down
+                .recv()
+                .await
+                .ok_or(Error::Internal(InternalErrorKind::InternalChannelClosed))?;
+            self.pending.extend(packets.iter().map(|p| p.to_vec()));
         }
     }
 }

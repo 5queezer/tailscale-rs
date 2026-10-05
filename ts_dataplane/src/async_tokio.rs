@@ -355,7 +355,7 @@ impl DataPlane {
         }
 
         if let Some(to_local) = to_local {
-            write_to_overlay(&core, to_local).await;
+            write_to_overlay(&mut core, to_local).await;
         }
     }
 
@@ -370,11 +370,20 @@ impl DataPlane {
     }
 }
 
-async fn write_to_overlay(slf: &CoreState, packets: HashMap<OverlayTransportId, Vec<PacketMut>>) {
+async fn write_to_overlay(
+    slf: &mut CoreState,
+    packets: HashMap<OverlayTransportId, Vec<PacketMut>>,
+) {
     for (id, packets) in packets {
         if let Some(queue) = slf.overlay_transports.get(&id) {
             tracing::trace!(overlay_id = ?id, n_packets = packets.len(), "overlay packets");
-            queue.send(packets).unwrap();
+
+            if queue.send(packets).is_err() {
+                // The receiver is gone for good: forget the transport so later packets for it are
+                // dropped without warning again.
+                tracing::warn!(overlay_id = ?id, "overlay packets dropped: no receiver");
+                slf.overlay_transports.remove(&id);
+            }
         }
     }
 }

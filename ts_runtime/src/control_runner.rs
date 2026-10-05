@@ -273,6 +273,10 @@ impl ControlRunner {
             mrb = mrb.hostname(hostname);
         }
 
+        if let Some(routes) = self.params.config.routable_ips() {
+            mrb = mrb.routable_ips(routes);
+        }
+
         if let Some(latency) = &self.derp_latency_measurement {
             if let Some(result) = latency.measurement.first() {
                 mrb = mrb.preferred_derp(result.id);
