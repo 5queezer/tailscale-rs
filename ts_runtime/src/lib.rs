@@ -4,8 +4,10 @@ extern crate ts_netstack_smoltcp as netstack;
 
 use std::sync::Arc;
 
-use kameo::message::Context;
+use kameo::message::{Context, Message};
 use tokio::sync::Mutex;
+use ts_dataplane::async_tokio::{FromOverlay, Rx, ToOverlay, Tx};
+use ts_transport::OverlayTransportId;
 
 use crate::{
     control_runner::ControlRunner, dataplane::DataplaneActor, env::RegForwarded,
@@ -42,6 +44,38 @@ pub use task::{ErasedTask, Task};
 /// The runtime for a tailscale device.
 pub struct Runtime {
     env: Env,
+    packet_transport: Option<PacketTransport>,
+}
+
+/// Raw IP packet access to the overlay network, used to route advertised subnets.
+///
+/// Inbound packets addressed to an advertised subnet route arrive on `down`. Packets sent on `up`
+/// (tagged with `id`) go through the outbound overlay router like netstack traffic.
+pub struct PacketTransport {
+    /// The id of this overlay transport.
+    pub id: OverlayTransportId,
+    /// Send packets into the dataplane.
+    pub up: Tx<FromOverlay>,
+    /// Receive packets from the dataplane.
+    pub down: Rx<ToOverlay>,
+}
+
+/// Take the [`PacketTransport`] for advertised subnet routes.
+///
+/// Replies `None` if no routes are advertised or the transport was already taken.
+#[derive(Debug, Copy, Clone)]
+pub struct TakePacketTransport;
+
+impl Message<TakePacketTransport> for Runtime {
+    type Reply = Option<PacketTransport>;
+
+    async fn handle(
+        &mut self,
+        _: TakePacketTransport,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.packet_transport.take()
+    }
 }
 
 /// Configuration for starting a [`Runtime`].
@@ -82,6 +116,17 @@ impl kameo::Actor for Runtime {
             .ask::<DataplaneActor, _>(None, dataplane::NewOverlayTransport, true)
             .await?;
 
+        let advertise_routes = config.control_config.advertise_routes.clone();
+        let packet_transport = if advertise_routes.is_empty() {
+            None
+        } else {
+            let (id, up, down) = env
+                .ask::<DataplaneActor, _>(None, dataplane::NewOverlayTransport, true)
+                .await?;
+
+            Some(PacketTransport { id, up, down })
+        };
+
         disco::Disco::supervise(&slf, env.clone()).spawn().await;
 
         Multiderp::supervise(&slf, env.clone()).spawn().await;
@@ -89,9 +134,16 @@ impl kameo::Actor for Runtime {
             .spawn()
             .await;
 
-        route_updater::RouteUpdater::supervise(&slf, (env.clone(), netstack_id))
-            .spawn()
-            .await;
+        route_updater::RouteUpdater::supervise(
+            &slf,
+            (
+                env.clone(),
+                netstack_id,
+                packet_transport.as_ref().map(|t| (t.id, advertise_routes)),
+            ),
+        )
+        .spawn()
+        .await;
         packetfilter::PacketfilterUpdater::supervise(&slf, env.clone())
             .spawn()
             .await;
@@ -148,7 +200,10 @@ impl kameo::Actor for Runtime {
         env.wait::<NetstackActor>(None).await?;
         env.wait::<PeerTracker>(None).await?;
 
-        Ok(Self { env })
+        Ok(Self {
+            env,
+            packet_transport,
+        })
     }
 }
 

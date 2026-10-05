@@ -36,8 +36,14 @@ pub async fn start_stream(
 ) -> Result<impl Stream<Item = StateUpdate> + use<>, Error> {
     let builder = MapRequestBuilder::new(node_keys).as_stream();
 
-    let request = if let Some(hostname) = &config.hostname {
+    let builder = if let Some(hostname) = &config.hostname {
         builder.hostname(hostname)
+    } else {
+        builder
+    };
+
+    let request = if let Some(routes) = config.routable_ips() {
+        builder.routable_ips(routes)
     } else {
         builder
     }

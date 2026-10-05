@@ -20,6 +20,8 @@ use crate::{
 
 pub struct RouteUpdater {
     default_overlay_transport: OverlayTransportId,
+    /// Overlay transport for traffic to advertised subnet routes, and the advertised routes.
+    subnet_overlay_transport: Option<(OverlayTransportId, Vec<ipnet::IpNet>)>,
     /// Map of all available DERP regions to the ID of the underlay transport that handles that
     /// region.
     derp_transport_map: DerpTransportMap,
@@ -99,11 +101,15 @@ impl RouteUpdater {
 }
 
 impl kameo::Actor for RouteUpdater {
-    type Args = (Env, OverlayTransportId);
+    type Args = (
+        Env,
+        OverlayTransportId,
+        Option<(OverlayTransportId, Vec<ipnet::IpNet>)>,
+    );
     type Error = Error;
 
     async fn on_start(
-        (env, default_transport): Self::Args,
+        (env, default_transport, subnet_transport): Self::Args,
         slf: ActorRef<Self>,
     ) -> Result<Self, Self::Error> {
         env.subscribe::<Arc<PeerState>>(&slf).await?;
@@ -115,6 +121,7 @@ impl kameo::Actor for RouteUpdater {
 
         Ok(Self {
             default_overlay_transport: default_transport,
+            subnet_overlay_transport: subnet_transport,
             derp_transport_map: Default::default(),
             peer_state: Default::default(),
             best_paths: Default::default(),
@@ -186,16 +193,14 @@ impl Message<Arc<ts_control::StateUpdate>> for RouteUpdater {
             return;
         };
 
-        let mut out = ts_bart::Table::default();
-
         tracing::debug!(accepted_routes = ?node.accepted_routes, "populating accepted routes");
 
-        for &accepted_route in &node.accepted_routes {
-            out.insert(
-                accepted_route,
-                InboundRouteAction::ToOverlay(self.default_overlay_transport),
-            );
-        }
+        let out = self_routes(
+            &node.accepted_routes,
+            &node.tailnet_address,
+            self.default_overlay_transport,
+            self.subnet_overlay_transport.as_ref(),
+        );
 
         if let Err(e) = self
             .env
@@ -207,6 +212,40 @@ impl Message<Arc<ts_control::StateUpdate>> for RouteUpdater {
             tracing::error!(error = %e, "publishing self route update");
         }
     }
+}
+
+/// Build the inbound routing table for traffic addressed to this node.
+///
+/// Accepted routes covered by an advertised subnet route go to the subnet transport, if there is
+/// one; everything else goes to `default_transport` (the netstack). Our own tailnet addresses
+/// always go to `default_transport`, even if an advertised route covers them.
+fn self_routes(
+    accepted_routes: &[ipnet::IpNet],
+    tailnet_address: &ts_control::TailnetAddress,
+    default_transport: OverlayTransportId,
+    subnet_transport: Option<&(OverlayTransportId, Vec<ipnet::IpNet>)>,
+) -> ts_bart::Table<InboundRouteAction> {
+    let mut out = ts_bart::Table::default();
+
+    for &accepted_route in accepted_routes {
+        let transport = match subnet_transport {
+            Some((id, advertised)) if advertised.iter().any(|r| r.contains(&accepted_route)) => *id,
+            _ => default_transport,
+        };
+
+        out.insert(accepted_route, InboundRouteAction::ToOverlay(transport));
+    }
+
+    out.insert(
+        core::net::IpAddr::from(tailnet_address.ipv4.addr()).into(),
+        InboundRouteAction::ToOverlay(default_transport),
+    );
+    out.insert(
+        core::net::IpAddr::from(tailnet_address.ipv6.addr()).into(),
+        InboundRouteAction::ToOverlay(default_transport),
+    );
+
+    out
 }
 
 impl Message<BestPaths> for RouteUpdater {
@@ -225,5 +264,60 @@ impl Message<BestPaths> for RouteUpdater {
         self.best_paths = new_bps;
 
         self.publish_peer_routes().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lookup(table: &ts_bart::Table<InboundRouteAction>, ip: &str) -> Option<OverlayTransportId> {
+        match table.lookup(ip.parse().unwrap()) {
+            Some(&InboundRouteAction::ToOverlay(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn self_routes_split() {
+        let netstack = OverlayTransportId::from(0);
+        let subnet = OverlayTransportId::from(1);
+
+        let tailnet_address = ts_control::TailnetAddress {
+            ipv4: "100.64.0.1/32".parse().unwrap(),
+            ipv6: "fd7a:115c:a1e0::1/128".parse().unwrap(),
+        };
+        let accepted: Vec<ipnet::IpNet> = [
+            "100.64.0.1/32",
+            "fd7a:115c:a1e0::1/128",
+            "192.168.1.0/24",
+            "10.0.0.0/8",
+        ]
+        .iter()
+        .map(|r| r.parse().unwrap())
+        .collect();
+
+        // Without a subnet transport, everything goes to the netstack.
+        let table = self_routes(&accepted, &tailnet_address, netstack, None);
+        assert_eq!(lookup(&table, "100.64.0.1"), Some(netstack));
+        assert_eq!(lookup(&table, "192.168.1.5"), Some(netstack));
+
+        // 10.0.0.0/8 is accepted but not advertised, so it stays on the netstack. 100.64.0.0/10
+        // covers our own tailnet address, which must still go to the netstack.
+        let advertised = vec![
+            "192.168.0.0/16".parse().unwrap(),
+            "100.64.0.0/10".parse().unwrap(),
+        ];
+        let table = self_routes(
+            &accepted,
+            &tailnet_address,
+            netstack,
+            Some(&(subnet, advertised)),
+        );
+        assert_eq!(lookup(&table, "100.64.0.1"), Some(netstack));
+        assert_eq!(lookup(&table, "fd7a:115c:a1e0::1"), Some(netstack));
+        assert_eq!(lookup(&table, "192.168.1.5"), Some(subnet));
+        assert_eq!(lookup(&table, "10.1.2.3"), Some(netstack));
+        assert_eq!(lookup(&table, "192.168.2.1"), None);
     }
 }

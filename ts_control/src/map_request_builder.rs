@@ -84,6 +84,12 @@ impl<'a> MapRequestBuilder<'a> {
         self
     }
 
+    /// Set the [`HostInfo::routable_ips`] field.
+    pub fn routable_ips(mut self, routes: Vec<ipnet::IpNet>) -> Self {
+        self.host_info_mut().routable_ips = Some(routes);
+        self
+    }
+
     /// Set the [`NetInfo::preferred_derp`] field (inside [`MapRequest::host_info`] ->
     /// [`HostInfo::net_info`]).
     pub fn preferred_derp(mut self, value: ts_derp::RegionId) -> Self {
@@ -105,5 +111,34 @@ impl<'a> MapRequestBuilder<'a> {
 
     fn net_info_mut(&mut self) -> &mut NetInfo<'a> {
         self.host_info_mut().net_info.get_or_insert_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routable_ips() {
+        let keys = ts_keys::NodeState::generate();
+        let config = crate::Config {
+            advertise_routes: vec!["192.168.1.0/24".parse().unwrap()],
+            ..Default::default()
+        };
+
+        let req = MapRequestBuilder::new(&keys)
+            .routable_ips(config.routable_ips().unwrap())
+            .build();
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            json["HostInfo"]["RoutableIps"],
+            serde_json::json!(["192.168.1.0/24"])
+        );
+
+        // No advertised routes: the field is omitted entirely.
+        assert_eq!(crate::Config::default().routable_ips(), None);
+        let req = MapRequestBuilder::new(&keys).build();
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json["HostInfo"].get("RoutableIps").is_none());
     }
 }

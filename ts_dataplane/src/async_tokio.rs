@@ -374,7 +374,10 @@ async fn write_to_overlay(slf: &CoreState, packets: HashMap<OverlayTransportId, 
     for (id, packets) in packets {
         if let Some(queue) = slf.overlay_transports.get(&id) {
             tracing::trace!(overlay_id = ?id, n_packets = packets.len(), "overlay packets");
-            queue.send(packets).unwrap();
+
+            if queue.send(packets).is_err() {
+                tracing::warn!(overlay_id = ?id, "overlay packets dropped: no receiver");
+            }
         }
     }
 }

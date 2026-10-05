@@ -26,6 +26,10 @@ An `axum`-based HTTP server that serves a simple webpage over the tailnet.
 
 A UDP client that sends "hello" to a tailnet peer on a configurable interval.
 
+### [Subnet Router](subnet_router)
+
+A subnet router that advertises routes and forwards their traffic through a Linux TUN device.
+
 ### [TCP Echo](tcp_echo)
 
 A TCP server that listens on the tailnet and echoes input back to the sender.

@@ -28,6 +28,13 @@ pub struct Config {
     ///
     /// Ephemeral nodes are deleted by control after a short period of inactivity.
     pub ephemeral: bool,
+
+    /// Subnet routes this node advertises to the tailnet (`HostInfo.RoutableIPs`).
+    ///
+    /// Routes must be approved in the admin console (or by an auto-approver) before peers will
+    /// send traffic for them.
+    #[serde(default)]
+    pub advertise_routes: Vec<ipnet::IpNet>,
 }
 
 impl Config {
@@ -43,6 +50,11 @@ impl Config {
 
         full_name
     }
+
+    /// The value to report in `HostInfo.RoutableIPs`: `None` if no routes are advertised.
+    pub fn routable_ips(&self) -> Option<Vec<ipnet::IpNet>> {
+        (!self.advertise_routes.is_empty()).then(|| self.advertise_routes.clone())
+    }
 }
 
 impl Debug for Config {
@@ -52,6 +64,7 @@ impl Debug for Config {
             .field("server_url", &self.server_url.as_str())
             .field("client_name", &self.client_name)
             .field("ephemeral", &self.ephemeral)
+            .field("advertise_routes", &self.advertise_routes)
             .finish()
     }
 }
@@ -64,6 +77,7 @@ impl Default for Config {
             client_name: None,
             tags: Default::default(),
             ephemeral: false,
+            advertise_routes: Default::default(),
         }
     }
 }
